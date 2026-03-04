@@ -13,12 +13,15 @@ import time
 import re
 import sys
 import asyncio
+import logging
 from typing import List, Optional
 
 try:
     import websockets
 except Exception:
     websockets = None
+
+logger = logging.getLogger(__name__)
 
 
 class RotaryPhone:
@@ -219,11 +222,14 @@ def main():
             return
 
         phone = RotaryPhone()
-
         async def run_client():
             # Dial a room number before connecting
-            room = input("Enter a room/number to dial (digits only, default 'lobby'): ").strip()
+            room = input("Enter a room/number to dial (digits/letters only, default 'lobby'): ").strip()
             if room:
+                # sanitize: allow alnum, underscore, hyphen
+                if not re.match(r'^[A-Za-z0-9_\-]+$', room):
+                    print("Invalid room name. Use letters, digits, '_' or '-'.")
+                    return
                 try:
                     phone.dial_number(room)
                 except ValueError as e:
@@ -238,13 +244,22 @@ def main():
                 pass
 
             client = ChatClient(phone)
-            await client.connect()
+            try:
+                await client.connect()
+            except Exception as e:
+                print(f"Could not connect: {e}")
+                return
 
             print("Type messages and press Enter to send. Type '/hangup' to exit.")
             try:
                 while True:
-                    # Use blocking input in a thread to avoid blocking the event loop
-                    msg = await asyncio.to_thread(input, "> ")
+                    # Prefer aioconsole if available, else run input in thread
+                    try:
+                        import aioconsole  # type: ignore
+                        msg = await aioconsole.ainput("> ")
+                    except Exception:
+                        msg = await asyncio.to_thread(input, "> ")
+
                     if not msg:
                         continue
                     if msg.strip() == "/hangup":
@@ -259,7 +274,7 @@ def main():
         try:
             asyncio.run(run_client())
         except Exception as e:
-            print(f"Client error: {e}")
+            logger.exception("Client error")
         return
 
     # Default behavior: run original demo examples
@@ -339,17 +354,17 @@ class ChatClient:
     async def connect(self):
         room = self.phone.get_dialed_number() or "lobby"
         uri = f"ws://{self.host}:{self.port}/{room}"
-        print(f"Connecting to {uri} ...")
+        logger.info("Connecting to %s ...", uri)
         self.ws = await websockets.connect(uri)
-        print("📡 Connected to chat room.")
+        logger.info("📡 Connected to chat room.")
         asyncio.create_task(self._receive_loop())
 
     async def _receive_loop(self):
         try:
             async for msg in self.ws:
                 print(f"\n📨 [remote] {msg}")
-        except Exception as e:
-            print(f"Receive loop ended: {e}")
+        except Exception:
+            logger.exception("Receive loop ended")
 
     async def send_message(self, message: str):
         # Simulate rotary delay per character
@@ -360,7 +375,7 @@ class ChatClient:
             if digit == '0':
                 pulses = 10
             delay = (pulses * self.phone.DELAY_PER_UNIT) / 1000
-            print(f"Rotary sending '{ch}' -> pulses={pulses} delay={delay:.2f}s")
+            logger.debug("Rotary sending '%s' -> pulses=%d delay=%.2fs", ch, pulses, delay)
             await asyncio.sleep(delay)
         if self.ws:
             await self.ws.send(message)
