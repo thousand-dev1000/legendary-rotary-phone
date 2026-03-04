@@ -11,7 +11,14 @@ A simulation of a classic rotary telephone that demonstrates:
 
 import time
 import re
+import sys
+import asyncio
 from typing import List, Optional
+
+try:
+    import websockets
+except Exception:
+    websockets = None
 
 
 class RotaryPhone:
@@ -187,13 +194,77 @@ class RotaryPhone:
 def main():
     """Sample usage of the Legendary Rotary Phone."""
     
+    # Provide a small CLI to either run the websocket server or run a chat client
     print("\n" + "*" * 40)
     print("LEGENDARY ROTARY PHONE SIMULATOR")
     print("*" * 40 + "\n")
-    
-    # Create a new rotary phone
+
+    # If user passed 'server' run simple websocket chat server
+    if len(sys.argv) > 1 and sys.argv[1] == "server":
+        if websockets is None:
+            print("websockets library not installed. See requirements.txt.")
+            return
+        # Lazy import to avoid circular issues
+        from phone import ws_chat_server
+        try:
+            asyncio.run(ws_chat_server.run_server())
+        except KeyboardInterrupt:
+            print("\nServer stopped.")
+        return
+
+    # If user passed 'client' run chat client interactive mode
+    if len(sys.argv) > 1 and sys.argv[1] == "client":
+        if websockets is None:
+            print("websockets library not installed. See requirements.txt.")
+            return
+
+        phone = RotaryPhone()
+
+        async def run_client():
+            # Dial a room number before connecting
+            room = input("Enter a room/number to dial (digits only, default 'lobby'): ").strip()
+            if room:
+                try:
+                    phone.dial_number(room)
+                except ValueError as e:
+                    print(f"❌ Error: {e}")
+                    return
+
+            # Initiate the call (connect)
+            try:
+                phone.call()
+            except RuntimeError:
+                # allow continuing even if no digits dialed
+                pass
+
+            client = ChatClient(phone)
+            await client.connect()
+
+            print("Type messages and press Enter to send. Type '/hangup' to exit.")
+            try:
+                while True:
+                    # Use blocking input in a thread to avoid blocking the event loop
+                    msg = await asyncio.to_thread(input, "> ")
+                    if not msg:
+                        continue
+                    if msg.strip() == "/hangup":
+                        break
+                    await client.send_message(msg)
+            except KeyboardInterrupt:
+                pass
+            finally:
+                await client.close()
+                phone.hang_up()
+
+        try:
+            asyncio.run(run_client())
+        except Exception as e:
+            print(f"Client error: {e}")
+        return
+
+    # Default behavior: run original demo examples
     phone = RotaryPhone()
-    
+
     try:
         # Example 1: Dial a number digit by digit
         print("Example 1: Dialing number digit by digit\n")
@@ -204,41 +275,41 @@ def main():
         phone.dial_digit('2')
         phone.dial_digit('3')
         phone.dial_digit('4')
-        
+
         # Check status before calling
         phone.status()
-        
+
         # Initiate the call
         phone.call()
         time.sleep(2)  # Simulate call duration
         phone.hang_up()
-        
+
         # Example 2: Dial a complete number
         print("\n\nExample 2: Dialing a complete number\n")
         phone.dial_number("2125551234")
         phone.call()
         time.sleep(2)
         phone.hang_up()
-        
+
         # Example 3: Show call history
         phone.status()
-        
+
         # Example 4: Error handling
         print("\nExample 3: Demonstrating error handling\n")
         try:
             phone.dial_digit('A')
         except ValueError as e:
             print(f"❌ Error caught: {e}")
-        
+
         try:
             phone.call()
         except RuntimeError as e:
             print(f"❌ Error caught: {e}")
-        
+
         # Example 4: Interactive dialing
         print("\n\nExample 4: Interactive mode (dial any 5-digit number)\n")
         interactive_number = input("Enter a 5-digit number to dial (or press Enter to skip): ").strip()
-        
+
         if interactive_number:
             try:
                 phone.dial_number(interactive_number)
@@ -247,14 +318,57 @@ def main():
                 phone.hang_up()
             except ValueError as e:
                 print(f"❌ Error: {e}")
-        
+
         # Final status
         phone.status()
-        
+
     except KeyboardInterrupt:
         print("\n\nSimulation interrupted by user.")
         if phone.is_connected:
             phone.hang_up()
+
+
+class ChatClient:
+    """Simple WebSocket chat client that uses rotary-style delays when sending."""
+    def __init__(self, phone: RotaryPhone, host: str = "localhost", port: int = 8765):
+        self.phone = phone
+        self.host = host
+        self.port = port
+        self.ws = None
+
+    async def connect(self):
+        room = self.phone.get_dialed_number() or "lobby"
+        uri = f"ws://{self.host}:{self.port}/{room}"
+        print(f"Connecting to {uri} ...")
+        self.ws = await websockets.connect(uri)
+        print("📡 Connected to chat room.")
+        asyncio.create_task(self._receive_loop())
+
+    async def _receive_loop(self):
+        try:
+            async for msg in self.ws:
+                print(f"\n📨 [remote] {msg}")
+        except Exception as e:
+            print(f"Receive loop ended: {e}")
+
+    async def send_message(self, message: str):
+        # Simulate rotary delay per character
+        for ch in message:
+            digit = str(ord(ch) % 10)
+            pulses = self.phone.PULSE_MAP.get(digit, 1)
+            # map '0' to 10 pulses
+            if digit == '0':
+                pulses = 10
+            delay = (pulses * self.phone.DELAY_PER_UNIT) / 1000
+            print(f"Rotary sending '{ch}' -> pulses={pulses} delay={delay:.2f}s")
+            await asyncio.sleep(delay)
+        if self.ws:
+            await self.ws.send(message)
+
+    async def close(self):
+        if self.ws:
+            await self.ws.close()
+            self.ws = None
 
 
 if __name__ == "__main__":
