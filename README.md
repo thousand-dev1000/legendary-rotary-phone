@@ -185,3 +185,24 @@ This simulator embodies the spirit of the "Legendary Rotary Phone" concept:
 ## License
 
 Educational and demonstration purposes. Use freely!
+ 
+## WebSocket Chat Extension
+
+This repository also contains a simple WebSocket chat server and a rotary-style chat client.
+
+Quick commands:
+
+```bash
+pip install -r phone/requirements.txt
+pip install -r phone/requirements-dev.txt  # optional, for tests and aioconsole
+python phone/ws_chat_server.py              # run server
+python phone/legendary_rotary_phone.py client  # run client
+```
+
+Tests
+
+Run the included async integration test with pytest (dev deps required):
+
+```bash
+pytest -q phone/tests/test_ws_chat.py
+```
