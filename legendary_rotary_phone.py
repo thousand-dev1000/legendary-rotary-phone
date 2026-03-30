@@ -14,7 +14,7 @@ import re
 import sys
 import asyncio
 import logging
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 try:
     import websockets
@@ -26,41 +26,42 @@ logger = logging.getLogger(__name__)
 
 class RotaryPhone:
     """Simulates the behavior of a classic rotary telephone."""
-    
+
     # Rotary dialing delay per digit (milliseconds per unit)
     DELAY_PER_UNIT = 100  # 100ms per rotary pulse
-    
+
     # Digit to pulse count mapping (0 has 10 pulses in rotary phones)
     PULSE_MAP = {
         '1': 1, '2': 2, '3': 3, '4': 4, '5': 5,
         '6': 6, '7': 7, '8': 8, '9': 9, '0': 10
     }
-    
+
     # Inter-digit delay (pause between digits)
     INTER_DIGIT_DELAY = 0.5  # 500ms between digits
-    
+
     def __init__(self, phone_number: Optional[str] = None):
         """
         Initialize the rotary phone.
-        
+
         Args:
             phone_number: Optional initial phone number to dial
         """
         self.dialed_number: List[str] = []
         self.is_connected = False
         self.call_log: List[str] = []
-        
+        self.contacts: Dict[str, str] = {}
+
         if phone_number:
             self._validate_phone_number(phone_number)
             self.dialed_number = list(phone_number)
-    
+
     def _validate_phone_number(self, number: str) -> None:
         """
         Validate that the input contains only digits.
-        
+
         Args:
             number: The phone number to validate
-            
+
         Raises:
             ValueError: If the number contains invalid characters
         """
@@ -69,14 +70,14 @@ class RotaryPhone:
                 f"Invalid phone number '{number}'. "
                 "Only digits 0-9 are allowed."
             )
-    
+
     def dial_digit(self, digit: str) -> None:
         """
         Dial a single digit (0-9) with simulated rotary delay.
-        
+
         Args:
             digit: A single digit character ('0' through '9')
-            
+
         Raises:
             ValueError: If the digit is invalid or already connected
             RuntimeError: If trying to dial while connected
@@ -85,53 +86,53 @@ class RotaryPhone:
             raise RuntimeError(
                 "Cannot dial while already connected. Hang up first."
             )
-        
+
         if digit not in self.PULSE_MAP:
             raise ValueError(
                 f"Invalid digit '{digit}'. "
                 "Only digits 0-9 are allowed."
             )
-        
+
         # Simulate rotary dialing delay
         pulses = self.PULSE_MAP[digit]
         delay_seconds = (pulses * self.DELAY_PER_UNIT) / 1000
-        
+
         print(f"Dialing {digit}... ", end="", flush=True)
         time.sleep(delay_seconds)
         print(f"[{delay_seconds:.2f}s]")
-        
+
         self.dialed_number.append(digit)
-        
+
         # Inter-digit delay (brief pause before next digit)
         if digit != self.dialed_number[-1] or len(self.dialed_number) > 1:
             time.sleep(self.INTER_DIGIT_DELAY)
-    
+
     def dial_number(self, phone_number: str) -> None:
         """
         Dial a complete phone number digit by digit.
-        
+
         Args:
             phone_number: A string of digits to dial
-            
+
         Raises:
             ValueError: If the phone number is invalid
             RuntimeError: If already connected
         """
         self._validate_phone_number(phone_number)
-        
+
         print(f"\nStarting to dial: {phone_number}")
         print("-" * 40)
-        
+
         for digit in phone_number:
             self.dial_digit(digit)
-    
+
     def call(self) -> bool:
         """
         Initiate a call to the dialed number.
-        
+
         Returns:
             True if the call was successfully initiated
-            
+
         Raises:
             RuntimeError: If no digits have been dialed
         """
@@ -139,7 +140,7 @@ class RotaryPhone:
             raise RuntimeError(
                 "Cannot initiate a call. No digits dialed."
             )
-        
+
         phone_number = ''.join(self.dialed_number)
         print("\n" + "=" * 40)
         print(f"Calling: {phone_number}")
@@ -147,40 +148,74 @@ class RotaryPhone:
         time.sleep(1)
         print("📞 Connected!")
         print(f"Status: Call in progress with {phone_number}")
-        
+
         self.is_connected = True
         self.call_log.append(phone_number)
-        
+
         return True
-    
+
     def hang_up(self) -> None:
         """Disconnect the current call."""
         if not self.is_connected:
             print("No active call to hang up.")
             return
-        
+
         print("\n" + "-" * 40)
         print("📞 Hanging up...")
         time.sleep(0.5)
         print("Call ended.")
         print("-" * 40)
-        
+
         self.is_connected = False
         self.dialed_number.clear()
-    
+
     def clear(self) -> None:
         """Clear the dialed number (useful if a mistake was made)."""
         self.dialed_number.clear()
         print("Dialed number cleared.")
-    
+
     def get_dialed_number(self) -> str:
         """Return the currently dialed number as a string."""
         return ''.join(self.dialed_number)
-    
+
     def get_call_log(self) -> List[str]:
         """Return the list of all numbers called."""
         return self.call_log.copy()
-    
+
+    def add_contact(self, name: str, number: str) -> None:
+        """
+        Add a contact to the address book.
+
+        Args:
+            name: The name of the contact
+            number: The phone number (digits only)
+
+        Raises:
+            ValueError: If the number is invalid
+        """
+        self._validate_phone_number(number)
+        self.contacts[name] = number
+        print(f"Contact '{name}' added with number '{number}'.")
+
+    def dial_contact(self, name: str) -> None:
+        """
+        Dial a contact from the address book.
+
+        Args:
+            name: The name of the contact to dial
+
+        Raises:
+            ValueError: If the contact does not exist
+        """
+        if name not in self.contacts:
+            raise ValueError(f"Contact '{name}' not found in address book.")
+        number = self.contacts[name]
+        self.dial_number(number)
+
+    def get_contacts(self) -> Dict[str, str]:
+        """Return a copy of the contacts dictionary."""
+        return self.contacts.copy()
+
     def status(self) -> None:
         """Print the current status of the phone."""
         print("\n" + "=" * 40)
@@ -191,12 +226,17 @@ class RotaryPhone:
         print(f"Calls Made: {len(self.call_log)}")
         if self.call_log:
             print(f"Call History: {', '.join(self.call_log)}")
+        print(f"Contacts: {len(self.contacts)}")
+        if self.contacts:
+            contacts_str = ', '.join(
+                f"{name}: {num}" for name, num in self.contacts.items())
+            print(f"Address Book: {contacts_str}")
         print("=" * 40 + "\n")
 
 
 def main():
     """Sample usage of the Legendary Rotary Phone."""
-    
+
     # Provide a small CLI to either run the websocket server or run a chat client
     print("\n" + "*" * 40)
     print("LEGENDARY ROTARY PHONE SIMULATOR")
@@ -222,9 +262,11 @@ def main():
             return
 
         phone = RotaryPhone()
+
         async def run_client():
             # Dial a room number before connecting
-            room = input("Enter a room/number to dial (digits/letters only, default 'lobby'): ").strip()
+            room = input(
+                "Enter a room/number to dial (digits/letters only, default 'lobby'): ").strip()
             if room:
                 # sanitize: allow alnum, underscore, hyphen
                 if not re.match(r'^[A-Za-z0-9_\-]+$', room):
@@ -323,7 +365,8 @@ def main():
 
         # Example 4: Interactive dialing
         print("\n\nExample 4: Interactive mode (dial any 5-digit number)\n")
-        interactive_number = input("Enter a 5-digit number to dial (or press Enter to skip): ").strip()
+        interactive_number = input(
+            "Enter a 5-digit number to dial (or press Enter to skip): ").strip()
 
         if interactive_number:
             try:
@@ -345,6 +388,7 @@ def main():
 
 class ChatClient:
     """Simple WebSocket chat client that uses rotary-style delays when sending."""
+
     def __init__(self, phone: RotaryPhone, host: str = "localhost", port: int = 8765):
         self.phone = phone
         self.host = host
@@ -375,7 +419,8 @@ class ChatClient:
             if digit == '0':
                 pulses = 10
             delay = (pulses * self.phone.DELAY_PER_UNIT) / 1000
-            logger.debug("Rotary sending '%s' -> pulses=%d delay=%.2fs", ch, pulses, delay)
+            logger.debug(
+                "Rotary sending '%s' -> pulses=%d delay=%.2fs", ch, pulses, delay)
             await asyncio.sleep(delay)
         if self.ws:
             await self.ws.send(message)
