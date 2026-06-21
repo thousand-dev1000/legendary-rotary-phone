@@ -7,6 +7,9 @@ A simulation of a classic rotary telephone that demonstrates:
 - Rotary dialing delays based on digit value
 - Internal state management for dialed numbers
 - Call initiation and error handling
+- Voicemail / answering machine
+- Incoming call simulation
+- Speed dial
 """
 
 import time
@@ -14,6 +17,7 @@ import re
 import sys
 import asyncio
 import logging
+from datetime import datetime
 from typing import List, Optional, Dict
 
 try:
@@ -24,412 +28,320 @@ except Exception:
 logger = logging.getLogger(__name__)
 
 
+class Voicemail:
+    def __init__(self, from_number: str, message: str):
+        self.from_number = from_number
+        self.message = message
+        self.timestamp = datetime.now()
+
+    def __repr__(self) -> str:
+        ts = self.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+        return f"[{ts}] From {self.from_number}: {self.message}"
+
+
 class RotaryPhone:
-    """Simulates the behavior of a classic rotary telephone."""
+    PULSE_DURATION = 0.1       # 100ms per pulse
+    INTER_DIGIT_DELAY = 0.5    # 500ms between digits
 
-    # Rotary dialing delay per digit (milliseconds per unit)
-    DELAY_PER_UNIT = 100  # 100ms per rotary pulse
+    def __init__(
+        self,
+        phone_number: Optional[str] = None,
+        ring_count: int = 4,
+        call_timeout: int = 30,
+    ):
+        self._own_number = phone_number
+        self._dialed_digits: List[str] = []
+        self._connected = False
+        self._call_log: List[Dict] = []
+        self._speed_dial: Dict[str, str] = {}
+        self._voicemails: List[Voicemail] = []
+        self._ring_count = ring_count
+        self._call_timeout = call_timeout
+        self._call_start_time: Optional[float] = None
+        self._incoming_caller: Optional[str] = None
 
-    # Digit to pulse count mapping (0 has 10 pulses in rotary phones)
-    PULSE_MAP = {
-        '1': 1, '2': 2, '3': 3, '4': 4, '5': 5,
-        '6': 6, '7': 7, '8': 8, '9': 9, '0': 10
-    }
+    # ------------------------------------------------------------------ #
+    # Core dialing                                                         #
+    # ------------------------------------------------------------------ #
 
-    # Inter-digit delay (pause between digits)
-    INTER_DIGIT_DELAY = 0.5  # 500ms between digits
+    def _simulate_pulse(self, digit: str) -> None:
+        pulses = 10 if digit == "0" else int(digit)
+        for _ in range(pulses):
+            time.sleep(self.PULSE_DURATION)
+        time.sleep(self.INTER_DIGIT_DELAY)
 
-    def __init__(self, phone_number: Optional[str] = None):
-        """
-        Initialize the rotary phone.
-
-        Args:
-            phone_number: Optional initial phone number to dial
-        """
-        self.dialed_number: List[str] = []
-        self.is_connected = False
-        self.call_log: List[str] = []
-        self.contacts: Dict[str, str] = {}
-
-        if phone_number:
-            self._validate_phone_number(phone_number)
-            self.dialed_number = list(phone_number)
-
-    def _validate_phone_number(self, number: str) -> None:
-        """
-        Validate that the input contains only digits.
-
-        Args:
-            number: The phone number to validate
-
-        Raises:
-            ValueError: If the number contains invalid characters
-        """
-        if not re.match(r'^\d+$', number):
-            raise ValueError(
-                f"Invalid phone number '{number}'. "
-                "Only digits 0-9 are allowed."
-            )
-
-    def dial_digit(self, digit: str) -> None:
-        """
-        Dial a single digit (0-9) with simulated rotary delay.
-
-        Args:
-            digit: A single digit character ('0' through '9')
-
-        Raises:
-            ValueError: If the digit is invalid or already connected
-            RuntimeError: If trying to dial while connected
-        """
-        if self.is_connected:
-            raise RuntimeError(
-                "Cannot dial while already connected. Hang up first."
-            )
-
-        if digit not in self.PULSE_MAP:
-            raise ValueError(
-                f"Invalid digit '{digit}'. "
-                "Only digits 0-9 are allowed."
-            )
-
-        # Simulate rotary dialing delay
-        pulses = self.PULSE_MAP[digit]
-        delay_seconds = (pulses * self.DELAY_PER_UNIT) / 1000
-
-        print(f"Dialing {digit}... ", end="", flush=True)
-        time.sleep(delay_seconds)
-        print(f"[{delay_seconds:.2f}s]")
-
-        self.dialed_number.append(digit)
-
-        # Inter-digit delay (brief pause before next digit)
-        if digit != self.dialed_number[-1] or len(self.dialed_number) > 1:
-            time.sleep(self.INTER_DIGIT_DELAY)
+    def dial_digit(self, digit: str, speed: bool = False) -> None:
+        """Dial a single digit (0-9), or activate a speed-dial key when speed=True."""
+        if self._connected:
+            raise RuntimeError("Cannot dial while connected")
+        if speed:
+            key = str(digit)
+            if key not in self._speed_dial:
+                raise ValueError(f"No speed dial set for key {key!r}")
+            number = self._speed_dial[key]
+            print(f"Speed dial {key!r} -> {number}")
+            self.dial_number(number)
+            return
+        if digit not in "0123456789":
+            raise ValueError(f"Invalid digit: {digit!r}. Must be 0-9")
+        print(f"Dialing digit: {digit}")
+        self._simulate_pulse(digit)
+        self._dialed_digits.append(digit)
 
     def dial_number(self, phone_number: str) -> None:
-        """
-        Dial a complete phone number digit by digit.
-
-        Args:
-            phone_number: A string of digits to dial
-
-        Raises:
-            ValueError: If the phone number is invalid
-            RuntimeError: If already connected
-        """
-        self._validate_phone_number(phone_number)
-
-        print(f"\nStarting to dial: {phone_number}")
-        print("-" * 40)
-
-        for digit in phone_number:
-            self.dial_digit(digit)
+        """Dial a complete phone number digit by digit."""
+        if self._connected:
+            raise RuntimeError("Cannot dial while connected")
+        cleaned = re.sub(r"[\s\-\(\)\+]", "", phone_number)
+        if not re.match(r"^\d+$", cleaned):
+            raise ValueError(f"Invalid phone number: {phone_number!r}")
+        print(f"Dialing number: {phone_number}")
+        for digit in cleaned:
+            self._simulate_pulse(digit)
+            self._dialed_digits.append(digit)
 
     def call(self) -> bool:
-        """
-        Initiate a call to the dialed number.
-
-        Returns:
-            True if the call was successfully initiated
-
-        Raises:
-            RuntimeError: If no digits have been dialed
-        """
-        if not self.dialed_number:
-            raise RuntimeError(
-                "Cannot initiate a call. No digits dialed."
-            )
-
-        phone_number = ''.join(self.dialed_number)
-        print("\n" + "=" * 40)
-        print(f"Calling: {phone_number}")
-        print("=" * 40)
-        time.sleep(1)
-        print("📞 Connected!")
-        print(f"Status: Call in progress with {phone_number}")
-
-        self.is_connected = True
-        self.call_log.append(phone_number)
-
+        """Initiate a call to the currently dialed number."""
+        if not self._dialed_digits:
+            raise RuntimeError("No number dialed")
+        if self._connected:
+            raise RuntimeError("Already connected")
+        number = self.get_dialed_number()
+        print(f"Calling {number}...")
+        time.sleep(1.5)  # simulate ring before answer
+        self._connected = True
+        self._call_start_time = time.time()
+        self._call_log.append(
+            {
+                "number": number,
+                "timestamp": datetime.now(),
+                "type": "outgoing",
+                "answered": True,
+                "duration": None,
+            }
+        )
+        print(f"Connected to {number}")
         return True
 
     def hang_up(self) -> None:
         """Disconnect the current call."""
-        if not self.is_connected:
-            print("No active call to hang up.")
-            return
-
-        print("\n" + "-" * 40)
-        print("📞 Hanging up...")
-        time.sleep(0.5)
-        print("Call ended.")
-        print("-" * 40)
-
-        self.is_connected = False
-        self.dialed_number.clear()
+        if self._connected:
+            duration = time.time() - (self._call_start_time or time.time())
+            if self._call_log:
+                self._call_log[-1]["duration"] = round(duration, 1)
+            print(f"Call ended. Duration: {duration:.1f}s")
+        self._connected = False
+        self._call_start_time = None
+        self._incoming_caller = None
+        self._dialed_digits = []
 
     def clear(self) -> None:
-        """Clear the dialed number (useful if a mistake was made)."""
-        self.dialed_number.clear()
-        print("Dialed number cleared.")
+        """Clear the dialed number (cannot clear while connected)."""
+        if self._connected:
+            raise RuntimeError("Cannot clear while connected")
+        self._dialed_digits = []
+        print("Dialed number cleared")
 
     def get_dialed_number(self) -> str:
-        """Return the currently dialed number as a string."""
-        return ''.join(self.dialed_number)
+        return "".join(self._dialed_digits)
 
-    def get_call_log(self) -> List[str]:
-        """Return the list of all numbers called."""
-        return self.call_log.copy()
-
-    def add_contact(self, name: str, number: str) -> None:
-        """
-        Add a contact to the address book.
-
-        Args:
-            name: The name of the contact
-            number: The phone number (digits only)
-
-        Raises:
-            ValueError: If the number is invalid
-        """
-        self._validate_phone_number(number)
-        self.contacts[name] = number
-        print(f"Contact '{name}' added with number '{number}'.")
-
-    def dial_contact(self, name: str) -> None:
-        """
-        Dial a contact from the address book.
-
-        Args:
-            name: The name of the contact to dial
-
-        Raises:
-            ValueError: If the contact does not exist
-        """
-        if name not in self.contacts:
-            raise ValueError(f"Contact '{name}' not found in address book.")
-        number = self.contacts[name]
-        self.dial_number(number)
-
-    def get_contacts(self) -> Dict[str, str]:
-        """Return a copy of the contacts dictionary."""
-        return self.contacts.copy()
+    def get_call_log(self) -> List[Dict]:
+        return list(self._call_log)
 
     def status(self) -> None:
-        """Print the current status of the phone."""
-        print("\n" + "=" * 40)
-        print("ROTARY PHONE STATUS")
-        print("=" * 40)
-        print(f"Dialed Number: {self.get_dialed_number() or '(none)'}")
-        print(f"Connected: {'Yes' if self.is_connected else 'No'}")
-        print(f"Calls Made: {len(self.call_log)}")
-        if self.call_log:
-            print(f"Call History: {', '.join(self.call_log)}")
-        print(f"Contacts: {len(self.contacts)}")
-        if self.contacts:
-            contacts_str = ', '.join(
-                f"{name}: {num}" for name, num in self.contacts.items())
-            print(f"Address Book: {contacts_str}")
-        print("=" * 40 + "\n")
+        print("=" * 42)
+        print(f"  Phone:      {self._own_number or 'Unknown'}")
+        print(f"  Status:     {'Connected' if self._connected else 'On Hook'}")
+        print(f"  Dialed:     {self.get_dialed_number() or '(none)'}")
+        print(f"  Calls:      {len(self._call_log)}")
+        print(f"  Voicemails: {len(self._voicemails)}")
+        print(f"  Speed dials:{len(self._speed_dial)}")
+        print("=" * 42)
+
+    # ------------------------------------------------------------------ #
+    # Feature 3: Speed Dial                                               #
+    # ------------------------------------------------------------------ #
+
+    def set_speed_dial(self, key: str, number: str) -> None:
+        """Assign a phone number to a speed-dial key."""
+        key = str(key)
+        cleaned = re.sub(r"[\s\-\(\)\+]", "", number)
+        if not re.match(r"^\d+$", cleaned):
+            raise ValueError(f"Invalid phone number: {number!r}")
+        self._speed_dial[key] = cleaned
+        print(f"Speed dial {key!r} -> {cleaned}")
+
+    def get_speed_dial(self) -> Dict[str, str]:
+        return dict(self._speed_dial)
+
+    # ------------------------------------------------------------------ #
+    # Feature 2: Incoming Call Simulation                                 #
+    # ------------------------------------------------------------------ #
+
+    def receive_call(self, from_number: str, auto_answer: bool = False) -> bool:
+        """
+        Simulate an incoming call from from_number.
+
+        Rings ring_count times.  If auto_answer is True the call is answered
+        immediately; otherwise it rolls to voicemail.
+        Returns True if answered, False if sent to voicemail.
+        """
+        if self._connected:
+            print(f"Busy. Call from {from_number} rejected.")
+            return False
+
+        print(f"\nIncoming call from: {from_number}")
+        self._incoming_caller = from_number
+
+        for i in range(self._ring_count):
+            print(f"  RING RING... ({i + 1}/{self._ring_count})")
+            time.sleep(1.5)
+            if auto_answer:
+                break
+
+        if auto_answer:
+            self._connected = True
+            self._call_start_time = time.time()
+            self._call_log.append(
+                {
+                    "number": from_number,
+                    "timestamp": datetime.now(),
+                    "type": "incoming",
+                    "answered": True,
+                    "duration": None,
+                }
+            )
+            print(f"Answered call from {from_number}")
+            return True
+
+        print(f"No answer. Directing {from_number} to voicemail.")
+        self._call_log.append(
+            {
+                "number": from_number,
+                "timestamp": datetime.now(),
+                "type": "incoming",
+                "answered": False,
+                "duration": 0,
+            }
+        )
+        self._incoming_caller = from_number  # kept so leave_voicemail can use it
+        return False
+
+    # ------------------------------------------------------------------ #
+    # Feature 1: Voicemail / Answering Machine                            #
+    # ------------------------------------------------------------------ #
+
+    def leave_voicemail(self, message: str, from_number: Optional[str] = None) -> None:
+        """Record a voicemail. Uses the last known incoming caller if from_number is omitted."""
+        caller = from_number or self._incoming_caller or "Unknown"
+        vm = Voicemail(caller, message)
+        self._voicemails.append(vm)
+        print(f"Voicemail recorded from {caller}")
+        self._incoming_caller = None
+
+    def play_voicemail(self, index: Optional[int] = None) -> Optional[Voicemail]:
+        """
+        Play voicemail(s).  Pass an index (0-based) to play a single message,
+        or omit to list all.
+        """
+        if not self._voicemails:
+            print("No voicemails.")
+            return None
+
+        if index is not None:
+            if index < 0 or index >= len(self._voicemails):
+                raise IndexError(f"No voicemail at index {index}")
+            vm = self._voicemails[index]
+            print(f"\n--- Voicemail {index + 1} of {len(self._voicemails)} ---")
+            print(repr(vm))
+            return vm
+
+        print(f"\n--- {len(self._voicemails)} Voicemail(s) ---")
+        for i, vm in enumerate(self._voicemails):
+            print(f"  {i + 1}. {vm!r}")
+        return None
+
+    def delete_voicemail(self, index: int) -> None:
+        if index < 0 or index >= len(self._voicemails):
+            raise IndexError(f"No voicemail at index {index}")
+        self._voicemails.pop(index)
+        print(f"Voicemail {index + 1} deleted.")
+
+    def get_voicemails(self) -> List[Voicemail]:
+        return list(self._voicemails)
 
 
-def main():
-    """Sample usage of the Legendary Rotary Phone."""
+# --------------------------------------------------------------------------- #
+# WebSocket chat client (rotary-style)                                        #
+# --------------------------------------------------------------------------- #
 
-    # Provide a small CLI to either run the websocket server or run a chat client
-    print("\n" + "*" * 40)
-    print("LEGENDARY ROTARY PHONE SIMULATOR")
-    print("*" * 40 + "\n")
-
-    # If user passed 'server' run simple websocket chat server
-    if len(sys.argv) > 1 and sys.argv[1] == "server":
-        if websockets is None:
-            print("websockets library not installed. See requirements.txt.")
-            return
-        # Lazy import to avoid circular issues
-        from phone import ws_chat_server
-        try:
-            asyncio.run(ws_chat_server.run_server())
-        except KeyboardInterrupt:
-            print("\nServer stopped.")
+async def _ws_client(uri: str) -> None:
+    if websockets is None:
+        print("websockets package not installed. Run: pip install websockets")
         return
+    print(f"Connecting to {uri} ...")
+    async with websockets.connect(uri) as ws:
+        print("Connected. Type messages and press Enter. Ctrl-C to quit.")
 
-    # If user passed 'client' run chat client interactive mode
-    if len(sys.argv) > 1 and sys.argv[1] == "client":
-        if websockets is None:
-            print("websockets library not installed. See requirements.txt.")
-            return
+        async def recv_loop() -> None:
+            async for msg in ws:
+                print(f"\r[received] {msg}\n> ", end="", flush=True)
 
-        phone = RotaryPhone()
-
-        async def run_client():
-            # Dial a room number before connecting
-            room = input(
-                "Enter a room/number to dial (digits/letters only, default 'lobby'): ").strip()
-            if room:
-                # sanitize: allow alnum, underscore, hyphen
-                if not re.match(r'^[A-Za-z0-9_\-]+$', room):
-                    print("Invalid room name. Use letters, digits, '_' or '-'.")
-                    return
-                try:
-                    phone.dial_number(room)
-                except ValueError as e:
-                    print(f"❌ Error: {e}")
-                    return
-
-            # Initiate the call (connect)
-            try:
-                phone.call()
-            except RuntimeError:
-                # allow continuing even if no digits dialed
-                pass
-
-            client = ChatClient(phone)
-            try:
-                await client.connect()
-            except Exception as e:
-                print(f"Could not connect: {e}")
-                return
-
-            print("Type messages and press Enter to send. Type '/hangup' to exit.")
-            try:
-                while True:
-                    # Prefer aioconsole if available, else run input in thread
-                    try:
-                        import aioconsole  # type: ignore
-                        msg = await aioconsole.ainput("> ")
-                    except Exception:
-                        msg = await asyncio.to_thread(input, "> ")
-
-                    if not msg:
-                        continue
-                    if msg.strip() == "/hangup":
-                        break
-                    await client.send_message(msg)
-            except KeyboardInterrupt:
-                pass
-            finally:
-                await client.close()
-                phone.hang_up()
-
+        recv_task = asyncio.create_task(recv_loop())
         try:
-            asyncio.run(run_client())
-        except Exception as e:
-            logger.exception("Client error")
-        return
-
-    # Default behavior: run original demo examples
-    phone = RotaryPhone()
-
-    try:
-        # Example 1: Dial a number digit by digit
-        print("Example 1: Dialing number digit by digit\n")
-        phone.dial_digit('5')
-        phone.dial_digit('5')
-        phone.dial_digit('5')
-        phone.dial_digit('1')
-        phone.dial_digit('2')
-        phone.dial_digit('3')
-        phone.dial_digit('4')
-
-        # Check status before calling
-        phone.status()
-
-        # Initiate the call
-        phone.call()
-        time.sleep(2)  # Simulate call duration
-        phone.hang_up()
-
-        # Example 2: Dial a complete number
-        print("\n\nExample 2: Dialing a complete number\n")
-        phone.dial_number("2125551234")
-        phone.call()
-        time.sleep(2)
-        phone.hang_up()
-
-        # Example 3: Show call history
-        phone.status()
-
-        # Example 4: Error handling
-        print("\nExample 3: Demonstrating error handling\n")
-        try:
-            phone.dial_digit('A')
-        except ValueError as e:
-            print(f"❌ Error caught: {e}")
-
-        try:
-            phone.call()
-        except RuntimeError as e:
-            print(f"❌ Error caught: {e}")
-
-        # Example 4: Interactive dialing
-        print("\n\nExample 4: Interactive mode (dial any 5-digit number)\n")
-        interactive_number = input(
-            "Enter a 5-digit number to dial (or press Enter to skip): ").strip()
-
-        if interactive_number:
-            try:
-                phone.dial_number(interactive_number)
-                phone.call()
-                time.sleep(1)
-                phone.hang_up()
-            except ValueError as e:
-                print(f"❌ Error: {e}")
-
-        # Final status
-        phone.status()
-
-    except KeyboardInterrupt:
-        print("\n\nSimulation interrupted by user.")
-        if phone.is_connected:
-            phone.hang_up()
+            loop = asyncio.get_event_loop()
+            while True:
+                line = await loop.run_in_executor(None, sys.stdin.readline)
+                line = line.rstrip("\n")
+                if line:
+                    await ws.send(line)
+                    print("> ", end="", flush=True)
+        except (KeyboardInterrupt, EOFError):
+            recv_task.cancel()
 
 
-class ChatClient:
-    """Simple WebSocket chat client that uses rotary-style delays when sending."""
+# --------------------------------------------------------------------------- #
+# Entry point                                                                 #
+# --------------------------------------------------------------------------- #
 
-    def __init__(self, phone: RotaryPhone, host: str = "localhost", port: int = 8765):
-        self.phone = phone
-        self.host = host
-        self.port = port
-        self.ws = None
+def _demo() -> None:
+    logging.basicConfig(level=logging.WARNING)
+    phone = RotaryPhone(phone_number="555-0001")
 
-    async def connect(self):
-        room = self.phone.get_dialed_number() or "lobby"
-        uri = f"ws://{self.host}:{self.port}/{room}"
-        logger.info("Connecting to %s ...", uri)
-        self.ws = await websockets.connect(uri)
-        logger.info("📡 Connected to chat room.")
-        asyncio.create_task(self._receive_loop())
+    print("\n=== 1. Basic digit dialing ===")
+    for d in "5551234":
+        phone.dial_digit(d)
+    phone.call()
+    phone.hang_up()
 
-    async def _receive_loop(self):
-        try:
-            async for msg in self.ws:
-                print(f"\n📨 [remote] {msg}")
-        except Exception:
-            logger.exception("Receive loop ended")
+    print("\n=== 2. dial_number shortcut ===")
+    phone.dial_number("212-555-9876")
+    phone.call()
+    phone.hang_up()
 
-    async def send_message(self, message: str):
-        # Simulate rotary delay per character
-        for ch in message:
-            digit = str(ord(ch) % 10)
-            pulses = self.phone.PULSE_MAP.get(digit, 1)
-            # map '0' to 10 pulses
-            if digit == '0':
-                pulses = 10
-            delay = (pulses * self.phone.DELAY_PER_UNIT) / 1000
-            logger.debug(
-                "Rotary sending '%s' -> pulses=%d delay=%.2fs", ch, pulses, delay)
-            await asyncio.sleep(delay)
-        if self.ws:
-            await self.ws.send(message)
+    print("\n=== 3. Speed dial ===")
+    phone.set_speed_dial("1", "800-555-0000")
+    phone.dial_digit("1", speed=True)
+    phone.call()
+    phone.hang_up()
 
-    async def close(self):
-        if self.ws:
-            await self.ws.close()
-            self.ws = None
+    print("\n=== 4. Incoming call -> voicemail ===")
+    answered = phone.receive_call("917-555-4321", auto_answer=False)
+    if not answered:
+        phone.leave_voicemail("Hey, call me back when you get a chance!")
+    phone.play_voicemail()
+
+    print("\n=== 5. Incoming call -> auto-answer ===")
+    phone.receive_call("646-555-7777", auto_answer=True)
+    phone.hang_up()
+
+    print("\n=== 6. Status ===")
+    phone.status()
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == "client":
+        uri = sys.argv[2] if len(sys.argv) > 2 else "ws://localhost:8765/room1"
+        asyncio.run(_ws_client(uri))
+    else:
+        _demo()
